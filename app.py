@@ -15,7 +15,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import HumanMessage, SystemMessage
 
 # ----------------------------- PAGE CONFIG -----------------------------
-st.set_page_config(page_title="AI Research & Report Team", page_icon="🧠", layout="wide")
+st.set_page_config(page_title="AI Research & Report Team", page_icon="", layout="wide")
 
 st.markdown(
     """
@@ -37,7 +37,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-st.title("🧠 AI Research & Report Team")
+st.title("AI Research & Report Team")
 st.caption("A multi-agent system: Planner → Researcher → Writer → Editor")
 
 # ----------------------------- SIDEBAR -----------------------------
