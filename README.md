@@ -21,54 +21,36 @@ You'll need a free Gemini API key from https://aistudio.google.com/apikey
 
 ---
 
-## 2. Deploy it for free (so clients can test it in a browser)
+## 2. Deploy it for free (so it's accessible from a browser)
 
 **Streamlit Community Cloud (recommended — free, 5 min setup):**
 
-1. Push this folder to a new GitHub repo (public or private).
+1. Push this folder to a GitHub repo (public or private).
 2. Go to https://share.streamlit.io → "New app" → connect your repo.
 3. Set the main file to `app.py` → Deploy.
 4. You'll get a live URL like `https://yourname-agent-team.streamlit.app`.
 
-That URL is what you send to Fiverr clients — they open it, paste an API key
-(theirs or a limited one you provide for demo), and run it themselves.
-
-**Alternative:** Render or Railway also host Streamlit apps free-tier — useful if
-you want a custom domain later.
+**Alternative:** Render or Railway also host Streamlit apps on a free tier — useful
+if you want a custom domain later.
 
 ---
 
-## 3. Using this for your Fiverr gig
+## 3. Project structure
 
-**Gig title ideas:**
-- "I will build a custom multi-agent AI research and automation system"
-- "I will build an AI agent team using LangChain and Gemini for your business"
-
-**Gig description pitch:**
-> I'll build you a multi-agent AI system where specialized agents (planner,
-> researcher, writer, reviewer, etc.) collaborate to complete a task —
-> content research, report generation, customer support triage, or a custom
-> workflow for your business. Delivered as a working web app you can test
-> immediately.
-
-**Demo strategy:**
-- Deploy this exact app and link it in your gig gallery/portfolio — let people
-  try it live before they buy.
-- Record a 30–60 sec screen recording of it running (Loom is free) — shows the
-  "agents talking to each other" trace, which is the most impressive part.
-
-**For paid orders — customize per client:**
-- Swap the 4 agents for whatever the client's task needs (e.g., support ticket
-  triage, product description generator, lead-qualification bot).
-- Keep the same trace-UI pattern — clients love *seeing* the reasoning, not just
-  getting a final answer.
+```
+app.py            # Main Streamlit app + agent logic
+requirements.txt  # Python dependencies
+.gitignore        # Excludes venv, cache, and secrets from git
+```
 
 ---
 
-## 4. Known limitations to mention to clients
+## 4. Known limitations
 
 - Uses DuckDuckGo's free search — no API key needed, but results can be rate
-  limited on very heavy use. For production-scale, swap in a paid search API
-  (Tavily, SerpAPI) — a good $$ upsell.
-- Gemini free tier has request-per-minute limits — fine for demos, mention
-  paid tier for production client use.
+  limited under heavy use. For production-scale use, swap in a paid search API
+  (Tavily, SerpAPI).
+- Gemini's free tier has request-per-minute and per-day limits. Google updates
+  which specific model names are free-tier eligible fairly often — check
+  https://ai.google.dev/gemini-api/docs/pricing if a model returns a 404 or
+  quota error, and update the model list in `app.py` accordingly.
