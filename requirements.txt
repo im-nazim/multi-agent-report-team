@@ -1,4 +1,13 @@
-streamlit>=1.35.0
-langchain>=0.2.0
-langchain-google-genai>=1.0.10
-duckduckgo-search>=6.1.0
+@"
+streamlit
+langchain
+langchain-google-genai
+langchain-text-splitters
+langchain-core
+ddgs
+pydantic
+pypdf
+python-docx
+numpy
+pandas
+"@ | Out-File -FilePath requirements.txt -Encoding utf8
