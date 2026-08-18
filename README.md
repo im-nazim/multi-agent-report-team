@@ -187,7 +187,7 @@ Note: each test topic runs the *entire* multi-agent pipeline, so evaluation cost
 
 ## Live demo
 
-Deployed on Streamlit Community Cloud: *(add your deployment link here)*
+Deployed on Streamlit Community Cloud: multi-agent-report-team-fb2shsrakct74rrdxte46f.streamlit.app
 
 ## Author
 
