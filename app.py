@@ -1,18 +1,19 @@
-"""
-AI Research & Report Team — Multi-Agent Automation System
------------------------------------------------------------
-A 4-agent pipeline (Planner -> Researcher -> Writer -> Editor) that takes
-a topic/task from the user and produces a polished, structured report.
+"""AI Research & Report Team — Streamlit UI.
 
-Built with: Streamlit + LangChain + Google Gemini + DuckDuckGo Search
+This file is intentionally UI-only. All the actual logic lives in:
+  schemas.py       - Pydantic data models
+  search_tools.py  - web search
+  rag.py           - document upload / chunking / embedding / retrieval
+  agents.py        - Planner, Research, Fact Checker, Writer, Editor, Judge
+  pipeline.py       - orchestrates the agents into one run_pipeline() call
 """
 
-import os
-import time
+import pandas as pd
 import streamlit as st
-from duckduckgo_search import DDGS
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_core.messages import HumanMessage, SystemMessage
+
+from rag import build_knowledge_base, hash_uploaded_files
+from agents import get_llm, judge_agent
+from pipeline import run_pipeline, analyze_citations
 
 # ----------------------------- PAGE CONFIG -----------------------------
 st.set_page_config(page_title="AI Research & Report Team", page_icon="", layout="wide")
@@ -32,13 +33,18 @@ st.markdown(
         color: #6C63FF;
         margin-bottom: 0.3rem;
     }
+    .source-item {
+        padding: 0.4rem 0;
+        border-bottom: 1px solid #eee;
+        font-size: 0.9rem;
+    }
     </style>
     """,
     unsafe_allow_html=True,
 )
 
 st.title("AI Research & Report Team")
-st.caption("A multi-agent system: Planner → Researcher → Writer → Editor")
+st.caption("A multi-agent system: Planner → Researcher → Fact Checker → Writer → Editor (with citations)")
 
 # ----------------------------- SIDEBAR -----------------------------
 with st.sidebar:
@@ -46,95 +52,58 @@ with st.sidebar:
     api_key = st.text_input("Google Gemini API Key", type="password", help="Get one free at aistudio.google.com")
     model_name = st.selectbox("Model", ["gemini-3-flash-preview", "gemini-2.5-flash-lite", "gemini-flash-lite-latest"], index=0)
     num_search_results = st.slider("Web sources per sub-topic", 2, 8, 4)
+
+    st.markdown("---")
+    st.subheader("📁 Knowledge Base (RAG)")
+    uploaded_files = st.file_uploader(
+        "Upload PDF, DOCX, or TXT files",
+        type=["pdf", "docx", "txt"],
+        accept_multiple_files=True,
+        help="The Research Agent will pull findings from these documents in addition to the web.",
+    )
+    num_doc_chunks = st.slider("Document chunks per sub-topic", 1, 8, 4)
+    index_clicked = st.button("📚 Index Documents", use_container_width=True)
+
+    if "kb_chunks" not in st.session_state:
+        st.session_state.kb_chunks = []
+        st.session_state.kb_vectors = None
+        st.session_state.kb_file_hash = None
+
+    if st.session_state.kb_chunks:
+        st.caption(f"✅ {len(st.session_state.kb_chunks)} chunks indexed from {len(uploaded_files or [])} file(s).")
+
+    st.markdown("---")
+    enable_fact_check = st.checkbox(
+        "✅ Enable fact-checking",
+        value=True,
+        help="Adds a Fact Checker Agent that verifies each finding against its cited source before writing. Uses 1 extra LLM call per sub-topic.",
+    )
+
     st.markdown("---")
     st.markdown(
         "**How it works**\n\n"
         "1. 🧭 Planner breaks your topic into sub-questions\n"
-        "2. 🔎 Researcher searches the web for each\n"
-        "3. ✍️ Writer drafts a full report\n"
-        "4. 🪄 Editor polishes and formats the final version"
+        "2. 🔎 Researcher searches the web + your documents, and cites each finding\n"
+        "3. ✅ Fact Checker verifies each finding against its source\n"
+        "4. ✍️ Writer drafts a full report with inline citations\n"
+        "5. 🪄 Editor polishes and formats the final version\n"
+        "6. 📚 Sources are listed at the end"
     )
 
-# ----------------------------- HELPERS -----------------------------
+# ----------------------------- KNOWLEDGE BASE INDEXING -----------------------------
 
-def get_llm(api_key: str, model_name: str):
-    return ChatGoogleGenerativeAI(model=model_name, google_api_key=api_key, temperature=0.4)
+if index_clicked:
+    if not api_key:
+        st.error("Enter your Gemini API key in the sidebar before indexing documents.")
+    elif not uploaded_files:
+        st.warning("Upload at least one PDF, DOCX, or TXT file first.")
+    else:
+        with st.spinner("Extracting, chunking, and embedding your documents..."):
+            build_knowledge_base(uploaded_files, api_key)
+            st.session_state.kb_file_hash = hash_uploaded_files(uploaded_files)
+        st.success(f"Indexed {len(st.session_state.kb_chunks)} chunks from {len(uploaded_files)} file(s).")
 
-
-def call_agent(llm, system_prompt: str, user_prompt: str) -> str:
-    messages = [SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)]
-    response = llm.invoke(messages)
-    content = response.content
-    # Some newer Gemini models return content as a list of blocks instead of a plain string
-    if isinstance(content, list):
-        parts = []
-        for block in content:
-            if isinstance(block, str):
-                parts.append(block)
-            elif isinstance(block, dict):
-                parts.append(block.get("text", ""))
-        content = "\n".join(parts)
-    return content.strip() if isinstance(content, str) else str(content)
-
-
-def web_search(query: str, max_results: int = 4):
-    results = []
-    try:
-        with DDGS() as ddgs:
-            for r in ddgs.text(query, max_results=max_results):
-                results.append(f"- {r.get('title', '')}: {r.get('body', '')} (Source: {r.get('href', '')})")
-    except Exception as e:
-        results.append(f"[Search failed for '{query}': {e}]")
-    return "\n".join(results) if results else "[No results found]"
-
-
-# ----------------------------- AGENTS -----------------------------
-
-def planner_agent(llm, topic: str):
-    system = (
-        "You are the Planner Agent in a multi-agent research team. "
-        "Break the user's topic into 3-5 focused, non-overlapping sub-questions "
-        "that together would produce a comprehensive report. "
-        "Return ONLY a numbered list, nothing else."
-    )
-    result = call_agent(llm, system, f"Topic: {topic}")
-    subtopics = [line.split(".", 1)[-1].strip(" -") for line in result.strip().split("\n") if line.strip()]
-    return [s for s in subtopics if s]
-
-
-def research_agent(llm, subtopic: str, num_results: int):
-    raw_results = web_search(subtopic, num_results)
-    system = (
-        "You are the Research Agent. Summarize the following raw web search results "
-        "into 4-6 concise, factual bullet points relevant to the sub-question. "
-        "Do not invent information not present in the results."
-    )
-    summary = call_agent(llm, system, f"Sub-question: {subtopic}\n\nRaw results:\n{raw_results}")
-    return summary
-
-
-def writer_agent(llm, topic: str, research_notes: dict):
-    notes_text = "\n\n".join([f"### {k}\n{v}" for k, v in research_notes.items()])
-    system = (
-        "You are the Writer Agent. Using the research notes provided, write a clear, "
-        "well-structured draft report on the main topic. Use headings and short paragraphs. "
-        "Do not fabricate facts beyond what's in the notes."
-    )
-    draft = call_agent(llm, system, f"Main topic: {topic}\n\nResearch notes:\n{notes_text}")
-    return draft
-
-
-def editor_agent(llm, draft: str):
-    system = (
-        "You are the Editor Agent. Polish the draft report: improve clarity, fix flow, "
-        "add a short executive summary at the top and a 'Key Takeaways' section at the end. "
-        "Keep formatting in clean Markdown."
-    )
-    final = call_agent(llm, system, draft)
-    return final
-
-
-# ----------------------------- MAIN UI -----------------------------
+# ----------------------------- MAIN RUN -----------------------------
 
 topic = st.text_input("📝 Enter a topic or task for your report", placeholder="e.g. Impact of AI on small business marketing in 2026")
 run = st.button("🚀 Run Agent Team", type="primary", use_container_width=True)
@@ -150,56 +119,32 @@ if run:
     llm = get_llm(api_key, model_name)
     trace_container = st.container()
 
-    # --- Planner ---
-    with trace_container:
-        st.markdown('<div class="agent-card"><div class="agent-title">🧭 Planner Agent</div>Breaking topic into sub-questions...</div>', unsafe_allow_html=True)
     try:
-        subtopics = planner_agent(llm, topic)
+        result = run_pipeline(
+            topic, llm, api_key, num_search_results, num_doc_chunks, enable_fact_check,
+            trace_container=trace_container,
+        )
     except Exception as e:
-        st.error(f"Planner Agent failed: {e}")
+        st.error(f"Pipeline failed: {e}")
         st.stop()
 
-    with trace_container:
-        st.markdown(f'<div class="agent-card"><div class="agent-title">🧭 Planner Agent — Done</div>{"<br>".join(subtopics)}</div>', unsafe_allow_html=True)
-
-    # --- Researcher ---
-    research_notes = {}
-    for i, sub in enumerate(subtopics, 1):
-        with trace_container:
-            st.markdown(f'<div class="agent-card"><div class="agent-title">🔎 Research Agent ({i}/{len(subtopics)})</div>Researching: {sub}</div>', unsafe_allow_html=True)
-        try:
-            notes = research_agent(llm, sub, num_search_results)
-        except Exception as e:
-            notes = f"[Research failed: {e}]"
-        research_notes[sub] = notes
-        with trace_container:
-            st.markdown(f'<div class="agent-card"><div class="agent-title">🔎 Findings: {sub}</div>{notes}</div>', unsafe_allow_html=True)
-
-    # --- Writer ---
-    with trace_container:
-        st.markdown('<div class="agent-card"><div class="agent-title">✍️ Writer Agent</div>Drafting the full report...</div>', unsafe_allow_html=True)
-    try:
-        draft = writer_agent(llm, topic, research_notes)
-    except Exception as e:
-        st.error(f"Writer Agent failed: {e}")
-        st.stop()
-
-    # --- Editor ---
-    with trace_container:
-        st.markdown('<div class="agent-card"><div class="agent-title">🪄 Editor Agent</div>Polishing final report...</div>', unsafe_allow_html=True)
-    try:
-        final_report = editor_agent(llm, draft)
-    except Exception as e:
-        final_report = draft
-        st.warning(f"Editor Agent failed, showing unedited draft: {e}")
+    final_report_with_sources = result["final_report"]
 
     st.markdown("---")
     st.header("📄 Final Report")
-    st.markdown(final_report)
+    st.markdown(final_report_with_sources)
+
+    with st.expander("📈 Run stats"):
+        st.write(
+            f"⏱️ {result['elapsed']:.1f}s · "
+            f"🔎 Findings kept {result['findings_after']}/{result['findings_before']} · "
+            f"🔤 Tokens {result['stats']['input_tokens']} in / {result['stats']['output_tokens']} out · "
+            f"📞 {result['stats']['llm_calls']} LLM calls"
+        )
 
     st.download_button(
         "⬇️ Download Report (Markdown)",
-        data=final_report,
+        data=final_report_with_sources,
         file_name=f"{topic[:40].strip().replace(' ', '_')}_report.md",
         mime="text/markdown",
         use_container_width=True,
@@ -207,3 +152,91 @@ if run:
 
 else:
     st.info("Enter your API key and a topic above, then click **Run Agent Team** to see the agents work together.")
+
+
+# ----------------------------- EVALUATION DASHBOARD -----------------------------
+
+st.markdown("---")
+with st.expander("📊 Evaluation Dashboard"):
+    st.caption(
+        "Runs the full pipeline across several test topics and scores each run: "
+        "an independent LLM judge rates relevance/completeness, plus fact-check pass rate "
+        "(faithfulness), citation accuracy, latency, and token usage."
+    )
+    default_topics = (
+        "Impact of AI chatbots on small business customer support in 2026\n"
+        "How remote work is reshaping urban housing markets\n"
+        "The role of nuclear energy in reducing carbon emissions"
+    )
+    eval_topics_text = st.text_area("Test topics (one per line)", value=default_topics, height=110)
+    eval_fact_check = st.checkbox("Fact-check during evaluation", value=enable_fact_check, key="eval_fc")
+    run_eval = st.button("▶️ Run Evaluation", use_container_width=True)
+
+    if run_eval:
+        if not api_key:
+            st.error("Enter your Gemini API key in the sidebar first.")
+        else:
+            eval_topics = [t.strip() for t in eval_topics_text.split("\n") if t.strip()]
+            if not eval_topics:
+                st.warning("Add at least one test topic.")
+            else:
+                eval_llm = get_llm(api_key, model_name)
+                rows = []
+                progress = st.progress(0.0)
+                for idx, t in enumerate(eval_topics, 1):
+                    with st.spinner(f"Running topic {idx}/{len(eval_topics)}: {t[:60]}"):
+                        try:
+                            run_result = run_pipeline(
+                                t, eval_llm, api_key, num_search_results, num_doc_chunks,
+                                eval_fact_check, trace_container=None,
+                            )
+                            judgement = judge_agent(eval_llm, t, run_result["final_report"], stats=run_result["stats"])
+                            citation_stats = analyze_citations(run_result["final_report"], run_result["global_sources"])
+                            pass_rate = run_result["fact_check_pass_rate"]
+                            rows.append({
+                                "Topic": t,
+                                "Relevance (1-5)": judgement.score,
+                                "Latency (s)": round(run_result["elapsed"], 1),
+                                "Sub-topics": len(run_result["subtopics"]),
+                                "Findings kept/total": f"{run_result['findings_after']}/{run_result['findings_before']}",
+                                "Fact-Check Pass %": round(pass_rate * 100) if pass_rate is not None else None,
+                                "Citations used": citation_stats["citations_used"],
+                                "Invalid citations": citation_stats["invalid_citations"],
+                                "Sources": len(run_result["global_sources"]),
+                                "Input tokens": run_result["stats"]["input_tokens"],
+                                "Output tokens": run_result["stats"]["output_tokens"],
+                                "LLM calls": run_result["stats"]["llm_calls"],
+                            })
+                        except Exception as e:
+                            st.warning(f"Evaluation run failed for '{t}': {e}")
+                            rows.append({
+                                "Topic": t, "Relevance (1-5)": None, "Latency (s)": None, "Sub-topics": None,
+                                "Findings kept/total": None, "Fact-Check Pass %": None, "Citations used": None,
+                                "Invalid citations": None, "Sources": None, "Input tokens": None,
+                                "Output tokens": None, "LLM calls": None,
+                            })
+                    progress.progress(idx / len(eval_topics))
+
+                if rows:
+                    df = pd.DataFrame(rows)
+                    st.dataframe(df, use_container_width=True)
+
+                    ok = df.dropna(subset=["Relevance (1-5)"])
+                    if not ok.empty:
+                        c1, c2, c3, c4 = st.columns(4)
+                        c1.metric("Avg Relevance", f"{ok['Relevance (1-5)'].astype(float).mean():.1f}/5")
+                        c2.metric("Avg Latency", f"{ok['Latency (s)'].astype(float).mean():.1f}s")
+                        if eval_fact_check and ok["Fact-Check Pass %"].notna().any():
+                            c3.metric("Avg Fact-Check Pass", f"{ok['Fact-Check Pass %'].astype(float).mean():.0f}%")
+                        else:
+                            c3.metric("Avg Fact-Check Pass", "N/A")
+                        total_tokens = ok["Input tokens"].astype(float).sum() + ok["Output tokens"].astype(float).sum()
+                        c4.metric("Total Tokens", f"{int(total_tokens):,}")
+
+                    st.download_button(
+                        "⬇️ Download results (CSV)",
+                        data=df.to_csv(index=False),
+                        file_name="evaluation_results.csv",
+                        mime="text/csv",
+                        use_container_width=True,
+                    )
