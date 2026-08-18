@@ -1,4 +1,3 @@
-@"
 streamlit
 langchain
 langchain-google-genai
@@ -10,4 +9,3 @@ pypdf
 python-docx
 numpy
 pandas
-"@ | Out-File -FilePath requirements.txt -Encoding utf8
